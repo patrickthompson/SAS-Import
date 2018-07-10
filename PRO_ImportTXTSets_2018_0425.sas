@@ -1,9 +1,9 @@
 
 
 
-%LET SOURCEPATH = S:\Opioid\DrugID_Table;
+%LET SOURCEPATH = C:\MyFolder\MyFile;
 
-%LET SAVEPATH = S:\Opioid\DrugID_Table;
+%LET SAVEPATH = S:\MyFolder;
 
 DATA NUMVARS;
 INPUT VARNAME $50.;
