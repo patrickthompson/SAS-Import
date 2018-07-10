@@ -1,0 +1,218 @@
+
+
+
+%LET SOURCEPATH = S:\Opioid\DrugID_Table;
+
+%LET SAVEPATH = S:\Opioid\DrugID_Table;
+
+DATA NUMVARS;
+INPUT VARNAME $50.;
+DATALINES;
+DIAGNOSIS_SEQUENCE
+Age_On_15th
+;
+RUN;
+
+DATA COMMAVARS;
+INPUT VARNAME $50.;
+DATALINES;
+Total_Billed_Units
+;
+RUN;
+
+DATA DATEVARS;
+INPUT VARNAME $50.;
+DATALINES;
+Admission_Date
+Discharge_Date
+From_Date
+To_Date
+Date_Of_Death
+Status_Start_Date
+Status_Stop_Date
+Closed_Date
+Prescription_Date
+Birth_Date
+;
+RUN;
+
+DATA COMMADELIMIT;
+INPUT TABLENAME $50.;
+DATALINES;
+MIC_06_Claims_2013
+;
+RUN;
+
+libname save "&SAVEPATH";
+
+Filename filelist pipe " DIR &SOURCEPATH /b /a-d";                                                                                                 
+                                                                                                                                                         
+Data ALLFOLDERS;                                                                                                                                         
+        Infile filelist truncover;                                                                                                                       
+        Input filename $100.;                                                                                                                            
+Run; 
+
+PROC SQL;
+CREATE TABLE ALLTEXTFILES AS
+SELECT * FROM ALLFOLDERS WHERE UPPER(FILENAME) LIKE '%TXT';
+QUIT;
+
+DATA ALLTEXTFILES_NAMES;
+SET ALLTEXTFILES;
+FORMAT NEWNAMECUT $32.;
+NEWNAME = TRANWRD(FILENAME, '.txt', '');
+NEWNAMECUT = substr(NEWNAME, LENGTH(NEWNAME)-31, 32);
+IF NEWNAMECUT = '' THEN NEWNAMECUT = NEWNAME;
+run;
+
+%MACRO CHANGENAME(VARNAME);
+PROC SQL;
+UPDATE ALLNAMES SET NEWNAME = (SELECT &VARNAME FROM TEMPDATASET WHERE ROW_ID = 1) WHERE NAME = "&VARNAME";
+QUIT;
+%MEND;
+
+%MACRO FORMATDATE(VARNAME);
+data TEMPDATASET;
+set TEMPDATASET;
+format _date mmddyy10.;
+_date=input(trim(&VARNAME),MMDDYY10.);
+DROP &VARNAME;
+RENAME _DATE=&VARNAME;
+%MEND;
+
+%MACRO FORMATNUMBERS(VARNAME);
+data TEMPDATASET;
+set TEMPDATASET;
+format _NUMBER BEST32.;
+_NUMBER=input(trim(&VARNAME),BEST32.);
+DROP &VARNAME;
+RENAME _NUMBER = &VARNAME;
+%MEND;
+
+%MACRO FORMATCOMMAS(VARNAME);
+data TEMPDATASET;
+set TEMPDATASET;
+format _NUMBER COMMA10.2;
+_NUMBER=input(trim(&VARNAME),COMMA10.2);
+DROP &VARNAME;
+RENAME _NUMBER = &VARNAME;
+%MEND;
+
+%macro delvars;
+  data vars;
+    set sashelp.vmacro;
+  run;
+
+  data _null_;
+    set vars;
+    temp=lag(name);
+    if scope='GLOBAL' and substr(name,1,3) ne 'SYS' and temp ne name and substr(name,1,3) ne '%gra%'
+    then
+      call execute('%symdel '||trim(left(name))||';');
+  run;
+
+%mend delvars;
+
+
+%MACRO IMPORTFILE(FILENAMES, FILENAMECUT, DELIMIT);
+
+proc import file="&SOURCEPATH\%STR(&FILENAMES).txt" out=RAWDATASET dbms=dlm replace; 
+getnames=no; 
+delimiter=&DELIMIT;
+run;
+
+PROC SQL;
+CREATE TABLE ALLNAMES AS
+SELECT NAME, '' AS NEWNAME LENGTH=50 FROM DICTIONARY.COLUMNS WHERE MEMNAME = 'RAWDATASET';
+QUIT;
+
+PROC SQL;
+CREATE TABLE TEMPDATASET AS
+SELECT MONOTONIC() AS ROW_ID, * FROM RAWDATASET;
+QUIT;
+
+
+DATA ALLNAMES;
+SET ALLNAMES;
+CALL EXECUTE('%CHANGENAME('||NAME||')');
+RUN;
+
+DATA ALLNAMES;
+SET ALLNAMES;
+FORMAT NEWNAME $30.;
+NEWNAME= TRANWRD(TRANWRD(TRANWRD(STRIP(NEWNAME), ' ', '_'), "#", '_'), "-", '_');
+RUN;
+
+PROC SQL;
+SELECT NAME || '=' || CASE WHEN LENGTH(NEWNAME) > 31 THEN SUBSTR(NEWNAME, 1, 30) ELSE NEWNAME END INTO: NL SEPARATED BY ' ' FROM ALLNAMES;
+QUIT;
+
+DATA TEMPDATASET;
+SET TEMPDATASET(RENAME=(&NL));
+RUN;
+
+DATA TEMPDATASET;
+SET TEMPDATASET;
+WHERE ROW_ID NE 1;
+DROP ROW_ID;
+RUN;
+
+PROC SQL;
+CREATE TABLE ALLNAMESINLIB AS
+SELECT MEMNAME, NAME, CASE WHEN NUMVARS.VARNAME IS NOT NULL THEN 1 ELSE 0 END AS NUMBERS
+, CASE WHEN DATEVARS.VARNAME IS NOT NULL THEN 1 ELSE 0 END AS DATES
+, CASE WHEN COMMAVARS.VARNAME IS NOT NULL THEN 1 ELSE 0 END AS COMMAS
+ FROM DICTIONARY.COLUMNS COLS
+LEFT JOIN NUMVARS ON UPPER(NUMVARS.VARNAME) = UPPER(NAME)
+LEFT JOIN DATEVARS ON UPPER(DATEVARS.VARNAME) = UPPER(NAME)
+LEFT JOIN COMMAVARS ON UPPER(COMMAVARS.VARNAME) = UPPER(NAME)
+WHERE UPPER(MEMNAME) = 'TEMPDATASET';
+QUIT;
+
+DATA _NULL_;
+SET ALLNAMESINLIB ;
+WHERE DATES = 1;
+CALL EXECUTE('%FORMATDATE('||NAME||')');
+RUN;
+
+DATA _NULL_;
+SET ALLNAMESINLIB ;
+WHERE NUMBERS = 1;
+CALL EXECUTE('%FORMATNUMBERS('||NAME||')');
+RUN;
+
+DATA _NULL_;
+SET ALLNAMESINLIB ;
+WHERE COMMAS = 1;
+CALL EXECUTE('%FORMATCOMMAS('||NAME||')');
+RUN;
+
+DATA SAVE.&FILENAMECUT;
+SET TEMPDATASET;
+RUN;
+
+PROC DATASETS LIBRARY=WORK;
+DELETE ALLNAMES TEMPDATASET RAWDATASET;
+RUN;
+
+%delvars;
+
+%MEND;
+
+PROC SQL;
+CREATE TABLE ALLTEXTFILES_NAMES AS
+SELECT NAMES.*
+, TRANWRD(FILENAME, '.txt', '') AS NEWNAME
+, CASE WHEN CD.TABLENAME IS NOT NULL THEN "','" ELSE "'09'x" END AS DELIMIT
+, CASE WHEN substr(TRANWRD(FILENAME, '.txt', ''), LENGTH(TRANWRD(FILENAME, '.txt', ''))-31, 32) IS NOT NULL THEN substr(TRANWRD(FILENAME, '.txt', ''), LENGTH(TRANWRD(FILENAME, '.txt', ''))-31, 32) ELSE TRANWRD(FILENAME, '.txt', '')END AS NEWNAMECUT
+FROM ALLTEXTFILES NAMES
+LEFT JOIN COMMADELIMIT CD ON CD.TABLENAME = TRANWRD(FILENAME, '.txt', '');
+QUIT;
+ 
+DATA ALLTEXTFILES_NAMES;
+SET ALLTEXTFILES_NAMES;
+CALL EXECUTE('%IMPORTFILE('||NEWNAME||', '||NEWNAMECUT||', '||DELIMIT||');');
+RUN;
+
+/* proc datasets library=WORK kill; quit; */
+
